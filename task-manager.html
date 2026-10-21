@@ -1,0 +1,300 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Task Manager</title>
+  <style>
+    :root {
+      color-scheme: light dark;
+      --background: #f5f6f8;
+      --surface: #ffffff;
+      --text: #17212b;
+      --muted: #4a5664;
+      --border: #c7ced6;
+      --accent: #164b86;
+      --accent-text: #ffffff;
+      --warning-bg: #fff1d7;
+      --warning-text: #593600;
+      --focus: #b05b00;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --background: #141a21;
+        --surface: #202a35;
+        --text: #f3f5f7;
+        --muted: #c2ccd7;
+        --border: #657487;
+        --accent: #a9d1ff;
+        --accent-text: #0d2239;
+        --warning-bg: #493619;
+        --warning-text: #ffdfaa;
+        --focus: #ffd17b;
+      }
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--background);
+      color: var(--text);
+      font: 16px/1.5 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    main {
+      width: min(100% - 32px, 720px);
+      margin: 48px auto;
+      padding: 28px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+    }
+    h1 { margin: 0 0 8px; font-size: 1.9rem; line-height: 1.2; }
+    p { margin: 0 0 20px; }
+    .intro, .stats { color: var(--muted); }
+    label { display: block; font-weight: 600; margin-bottom: 8px; }
+    .entry { display: flex; gap: 10px; }
+    input[type="text"] {
+      min-width: 0;
+      flex: 1;
+      padding: 11px 12px;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      background: var(--surface);
+      color: var(--text);
+      font: inherit;
+    }
+    button {
+      min-height: 44px;
+      padding: 10px 16px;
+      border: 1px solid var(--accent);
+      border-radius: 6px;
+      background: var(--accent);
+      color: var(--accent-text);
+      font: inherit;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    button.delete {
+      background: transparent;
+      color: var(--text);
+      border-color: var(--border);
+      flex-shrink: 0;
+    }
+    :focus-visible { outline: 3px solid var(--focus); outline-offset: 3px; }
+    .stats { margin: 24px 0 12px; }
+    ul { list-style: none; padding: 0; margin: 0; }
+    li {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 12px 0;
+      border-top: 1px solid var(--border);
+    }
+    li input[type="checkbox"] {
+      width: 22px;
+      height: 22px;
+      margin: 0;
+      flex-shrink: 0;
+      accent-color: var(--accent);
+      cursor: pointer;
+    }
+    .task-text { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+    li.completed .task-text { text-decoration: line-through; color: var(--muted); }
+    .warning {
+      padding: 12px;
+      border: 1px solid currentColor;
+      border-radius: 6px;
+      background: var(--warning-bg);
+      color: var(--warning-text);
+      margin: 18px 0 0;
+    }
+    .empty { padding: 18px 0 0; color: var(--muted); }
+    [hidden] { display: none !important; }
+    @media (max-width: 480px) {
+      main { width: min(100% - 20px, 720px); margin: 16px auto; padding: 18px; }
+      .entry { flex-direction: column; }
+      .entry button { width: 100%; }
+      li { gap: 9px; }
+      button.delete { padding: 10px 12px; }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <h1>Task Manager</h1>
+      <p class="intro">Create tasks, track progress, and remove tasks you no longer need.</p>
+    </header>
+
+    <noscript><p class="warning">JavaScript is required to use this task manager. Please enable JavaScript and reload the page.</p></noscript>
+
+    <form id="task-form">
+      <label for="task-input">Task description</label>
+      <div class="entry">
+        <input id="task-input" type="text" maxlength="200" required autocomplete="off" placeholder="What needs to be done?">
+        <button type="submit">Add Task</button>
+      </div>
+    </form>
+
+    <p id="storage-warning" class="warning" role="status" hidden>Local storage is unavailable. You can still manage tasks, but changes will not be saved after a refresh.</p>
+    <p id="task-stats" class="stats" role="status">Total: 0 · Completed: 0</p>
+    <ul id="task-list" aria-label="Tasks"></ul>
+    <p id="empty-state" class="empty">No tasks yet. Add one above to get started.</p>
+  </main>
+
+  <script>
+    'use strict';
+
+    const STORAGE_KEY = 'taskManager.tasks.v1';
+    const taskForm = document.getElementById('task-form');
+    const taskInput = document.getElementById('task-input');
+    const taskList = document.getElementById('task-list');
+    const taskStats = document.getElementById('task-stats');
+    const emptyState = document.getElementById('empty-state');
+    const storageWarning = document.getElementById('storage-warning');
+
+    let tasks = [];
+    let storageAvailable = true;
+    let nextId = 0;
+
+    function reportStorageFailure(error) {
+      // Once storage fails, keep all subsequent changes in memory only.
+      if (!storageAvailable) return;
+      storageAvailable = false;
+      storageWarning.hidden = false;
+      console.warn('Task Manager: persistent storage is unavailable.', error);
+    }
+
+    function loadTasks() {
+      try {
+        const stored = localStorage.getItem(STORAGE_KEY);
+        if (stored === null) return;
+        const parsed = JSON.parse(stored);
+        if (!Array.isArray(parsed)) throw new Error('Stored tasks are not an array.');
+
+        const seenIds = new Set();
+        // Reject invalid records rather than letting corrupted data break rendering.
+        tasks = parsed.filter(function (task) {
+          if (!task || typeof task !== 'object' ||
+              typeof task.id !== 'string' || task.id.length === 0 ||
+              typeof task.text !== 'string' || task.text.trim().length === 0 ||
+              task.text.length > 200 || typeof task.completed !== 'boolean' ||
+              seenIds.has(task.id)) return false;
+          seenIds.add(task.id);
+          return true;
+        }).map(function (task) {
+          return { id: task.id, text: task.text, completed: task.completed };
+        });
+        if (tasks.length !== parsed.length) {
+          console.warn('Task Manager: some invalid stored tasks were ignored.');
+        }
+      } catch (error) {
+        // Malformed JSON is not a storage-access failure; recover with an empty list.
+        if (error instanceof SyntaxError || error.message === 'Stored tasks are not an array.') {
+          console.warn('Task Manager: invalid saved task data; starting with an empty list.', error);
+          tasks = [];
+        } else {
+          reportStorageFailure(error);
+        }
+      }
+    }
+
+    function saveTasks() {
+      if (!storageAvailable) return;
+      try {
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(tasks));
+      } catch (error) {
+        reportStorageFailure(error);
+      }
+    }
+
+    function createTaskId() {
+      // A per-page sequence plus time and randomness avoids collisions with restored IDs.
+      let id;
+      do {
+        nextId += 1;
+        id = 'task-' + Date.now().toString(36) + '-' +
+          Math.random().toString(36).slice(2) + '-' + nextId;
+      } while (tasks.some(function (task) { return task.id === id; }));
+      return id;
+    }
+
+    function addTask(event) {
+      event.preventDefault();
+      const text = taskInput.value.trim();
+      if (!text || text.length > 200) return;
+      tasks.push({ id: createTaskId(), text: text, completed: false });
+      saveTasks();
+      renderTasks();
+      taskInput.value = '';
+      taskInput.focus();
+    }
+
+    function toggleTask(id) {
+      const task = tasks.find(function (item) { return item.id === id; });
+      if (!task) return;
+      task.completed = !task.completed;
+      saveTasks();
+      renderTasks();
+      // Re-rendering replaces controls, so restore focus for keyboard users.
+      const control = Array.from(taskList.querySelectorAll('input[type="checkbox"]'))
+        .find(function (checkbox) { return checkbox.dataset.taskId === id; });
+      if (control) control.focus();
+    }
+
+    function deleteTask(id) {
+      const index = tasks.findIndex(function (item) { return item.id === id; });
+      if (index === -1) return;
+      tasks.splice(index, 1);
+      saveTasks();
+      renderTasks();
+      const remainingButtons = taskList.querySelectorAll('button.delete');
+      if (remainingButtons.length) {
+        remainingButtons[Math.min(index, remainingButtons.length - 1)].focus();
+      } else {
+        taskInput.focus();
+      }
+    }
+
+    function updateTaskStats() {
+      const completed = tasks.filter(function (task) { return task.completed; }).length;
+      taskStats.textContent = 'Total: ' + tasks.length + ' · Completed: ' + completed;
+    }
+
+    function renderTasks() {
+      taskList.replaceChildren();
+      tasks.forEach(function (task) {
+        const item = document.createElement('li');
+        if (task.completed) item.classList.add('completed');
+
+        const checkbox = document.createElement('input');
+        checkbox.type = 'checkbox';
+        checkbox.checked = task.completed;
+        checkbox.dataset.taskId = task.id;
+        checkbox.setAttribute('aria-label', 'Mark ' + task.text + ' as ' +
+          (task.completed ? 'incomplete' : 'completed'));
+        checkbox.addEventListener('change', function () { toggleTask(task.id); });
+
+        const description = document.createElement('span');
+        description.className = 'task-text';
+        description.textContent = task.text;
+
+        const deleteButton = document.createElement('button');
+        deleteButton.type = 'button';
+        deleteButton.className = 'delete';
+        deleteButton.textContent = 'Delete';
+        deleteButton.setAttribute('aria-label', 'Delete task: ' + task.text);
+        deleteButton.addEventListener('click', function () { deleteTask(task.id); });
+
+        item.append(checkbox, description, deleteButton);
+        taskList.appendChild(item);
+      });
+      emptyState.hidden = tasks.length !== 0;
+      updateTaskStats();
+    }
+
+    taskForm.addEventListener('submit', addTask);
+    loadTasks();
+    renderTasks();
+  </script>
+</body>
+</html>
